@@ -110,3 +110,107 @@ fit %>%
 
 
 ### Diagnostic information:
+-The `modelr` package can be used to add residuals and fitted values to a dataframe. This will add in the residuals.
+```{r}
+modelr::add_residuals(nyc_airbnb, fit) %>% 
+  ggplot(aes(x = boro, y = resid)) + 
+  geom_violin() +
+  ylim(-500, 500)
+
+
+nyc_airbnb %>% 
+  modelr::add_residuals(fit) %>% 
+  ggplot(aes(x = stars, y = resid)) + geom_point()
+```
+
+What is the predicted values this model gives?
+```{r}
+modelr::add_predictions(nyc_airbnb, fit)
+```
+
+
+### Hypothesis Testing (skipping this)
+```{r}
+fit_null = lm(price ~ stars + boro, data = nyc_airbnb)
+fit_alt = lm(price ~ stars + boro + room_type, data = nyc_airbnb)
+```
+
+
+### Nesting Data
+We’ll now turn our attention to fitting models to datasets nested within variables – meaning, essentially, that we’ll use nest to create a list column containing datasets and fit separate models to each. This is very different from fitting nested models, even though the terminology is similar.
+
+In the airbnb data, we might think that star ratings and room type affects price differently in each borough. One way to allow this kind of effect modification is through interaction terms:
+```{r}
+fit_interaction = lm(price ~ stars * boro, data = nyc_airbnb)
+
+fit_interaction %>% 
+  broom::tidy()
+
+# This is asking: what the effect of stars for each borough on the price of airbnb? If you're looking on airbnb rentals in manhattan, this is gonna matter how much you pay. But queens and bronx, it won't really matter.
+
+fit_interaction = lm(price ~ stars * boro + room_type*boro, data = nyc_airbnb)
+# We can look at the interaction of room_type as well! This model is very flexible. Different model for the effect of stars and the effect of borough / room type.
+```
+
+```{r}
+nyc_airbnb %>% 
+  filter(boro == "Brooklyn") %>% 
+  lm(price ~ stars + room_type, data = .) %>% 
+  broom::tidy()
+```
+
+
+Trying mapping instead. Alternatively, we can nest within boroughs and fit borough-specific models associating price with rating and room type:
+```{r}
+nyc_airbnb %>% 
+  nest(data = -boro) %>% 
+  mutate(
+    models = map(.x = data, ~lm(price ~ stars + room_type, data = .x)),
+    results = map(models, broom::tidy)
+  ) %>% 
+  select(boro, results) %>% 
+  unnest(results)
+```
+
+## Let's nest neighborhoods
+```{r}
+manhattan_airbnb =
+  nyc_airbnb %>% 
+  filter(boro == "Manhattan")
+
+manhattan_nest_lm_res =
+  manhattan_airbnb %>% 
+  nest(data = -neighborhood) %>% 
+  mutate(models = map(data, ~lm(price ~ stars + room_type, data = .x)),
+         models = map(models, broom::tidy)) %>% 
+  select(-data) %>% 
+  unnest(models)
+```
+
+
+```{r}
+manhattan_nest_lm_res %>% 
+  filter(str_detect(term, "room_type")) %>% 
+  ggplot(aes(x = neighborhood, y = estimate)) + 
+  geom_point() + 
+  facet_wrap(~term) + 
+  theme(axis.text.x = element_text(angle = 80, hjust = 1))
+```
+
+Deep dive into NoHo room, where shared room is more expensive than private room:
+```{r}
+nyc_airbnb %>% 
+  filter(neighborhood == "NoHo", room_type == "Shared room")
+```
+
+
+### Binary Outcomes
+Using homicide datasets
+
+Need to specify family (binomial)
+
+```{r}
+
+```
+
+In Baltimore, race disparities exist. Can map across all the cities in the datasets across all cities.

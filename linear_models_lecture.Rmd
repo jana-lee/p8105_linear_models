@@ -440,3 +440,125 @@ pivot_longer(
   ggplot(aes(x = model, y = rmse)) + geom_violin()
 ```
 There's some improvement in predictive accuracy gained by allowing non-linearity. Between the two, go with piecewise and gam fits because they are easier to interpret.
+
+
+## Simulation
+
+### Simple linear regression for one n
+```{r}
+sim_regression = function(n, beta0 = 2, beta1 = 3) {
+  
+  sim_data = tibble(
+    x = rnorm(n, mean = 1, sd = 1),
+    y = beta0 + beta1 * x + rnorm(n, 0, 1)
+  )
+  
+  ls_fit = lm(y ~ x, data = sim_data)
+  
+  tibble(
+    beta0_hat = coef(ls_fit)[1],
+    beta1_hat = coef(ls_fit)[2]
+  )
+}
+```
+
+```{r}
+output = vector("list", 100)
+
+for (i in 1:100) {
+  output[[i]] = sim_regression(30)
+}
+
+sim_results = bind_rows(output)
+```
+
+```{r}
+sim_results = 
+  rerun(100, sim_regression(30, 2, 3)) %>% 
+  bind_rows()
+```
+Rerun is a lot like map. The first argument defines the among of iteration, the second argument is the function to use in each interation step. 
+
+Quick plots and compute some summaries for our simulation results:
+```{r}
+sim_results %>% 
+  ggplot(aes(x = beta0_hat, y = beta1_hat)) + 
+  geom_point()
+```
+
+```{r}
+sim_results %>% 
+  pivot_longer(
+    beta0_hat:beta1_hat,
+    names_to = "parameter", 
+    values_to = "estimate") %>% 
+  group_by(parameter) %>% 
+  summarize(emp_mean = mean(estimate),
+            emp_var = var(estimate)) %>% 
+  knitr::kable(digits = 3)
+```
+We see how our estimates are distributed under our simulation scenario and can compare empiracle results to theoretical ones. We can build intuition for fundamental statistical procedures under repeated sampling in a way that's not possible with single data sets.
+
+
+### Simulation: SLR for several n's
+Mapping this across multiple sample sizes
+```{r}
+n_list = list("n_30"  = 30, 
+              "n_60"  = 60, 
+              "n_120" = 120, 
+              "n_240" = 240)
+output = vector("list", length = 4)
+
+for (i in 1:4) {
+  output[[i]] = rerun(100, sim_regression(n_list[[i]])) %>% 
+    bind_rows
+}
+```
+
+Mutating data for different sample sizes
+```{r}
+sim_results = 
+  tibble(sample_size = c(30, 60, 120, 240)) %>% 
+  mutate(
+    output_lists = map(.x = sample_size, ~rerun(1000, sim_regression(n = .x))),
+    estimate_dfs = map(output_lists, bind_rows)) %>% 
+  select(-output_lists) %>% 
+  unnest(estimate_dfs)
+```
+
+Graphing the slope estimates across sample sizes
+```{r}
+sim_results %>% 
+  mutate(
+    sample_size = str_c("n = ", sample_size),
+    sample_size = fct_inorder(sample_size)) %>% 
+  ggplot(aes(x = sample_size, y = beta1_hat, fill = sample_size)) + 
+  geom_violin()
+```
+Estimates are centered around the truth of 3 for each sample size.
+
+Bivariate distribution of intercept and slop estimates across sample sizes
+```{r}
+sim_results %>% 
+  mutate(
+    sample_size = str_c("n = ", sample_size),
+    sample_size = fct_inorder(sample_size)) %>% 
+  ggplot(aes(x = beta0_hat, y = beta1_hat)) + 
+  geom_point(alpha = .2) + 
+  facet_grid(~sample_size)
+```
+Variability in the slope estimates was shown in the violin plot, but now we have a sense for the bivariate distribution of intercepts and slopes
+
+```{r}
+sim_results %>% 
+  pivot_longer(
+    beta0_hat:beta1_hat,
+    names_to = "parameter", 
+    values_to = "estimate") %>% 
+  group_by(parameter, sample_size) %>% 
+  summarize(emp_mean = mean(estimate),
+            emp_var = var(estimate)) %>% 
+  knitr::kable(digits = 3)
+```
+Values are consistent with the formulas above. This check is useful to support derivations.
+

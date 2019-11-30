@@ -39,6 +39,7 @@ Outputs are kind of a mess, but we can use the broom package to clean it up.
 ### Fit a model:
 ```{r}
 library(p8105.datasets)
+set.seed(1)
 
 data("nyc_airbnb")
 
@@ -133,8 +134,11 @@ modelr::add_predictions(nyc_airbnb, fit)
 ```{r}
 fit_null = lm(price ~ stars + boro, data = nyc_airbnb)
 fit_alt = lm(price ~ stars + boro + room_type, data = nyc_airbnb)
-```
 
+anova(fit_null, fit_alt) %>% 
+  broom::tidy()
+```
+This works for nested models only. Comparing non-nested models requires other methods --> aka cross validation.
 
 ### Nesting Data
 We’ll now turn our attention to fitting models to datasets nested within variables – meaning, essentially, that we’ll use nest to create a list column containing datasets and fit separate models to each. This is very different from fitting nested models, even though the terminology is similar.
@@ -205,12 +209,188 @@ nyc_airbnb %>%
 
 
 ### Binary Outcomes
-Using homicide datasets
+Using homicide dataset from Washington Post. We will use the unresolved murders in Baltimore, MD to illustrate logistic regression.
 
 Need to specify family (binomial)
 
 ```{r}
+baltimore_df = 
+  read_csv("data/homicide-data.csv") %>% 
+  filter(city == "Baltimore") %>% 
+  mutate(
+    resolved = as.numeric(disposition == "Closed by arrest"),
+    victim_age = as.numeric(victim_age),
+    victim_race = fct_relevel(victim_race, "White")) %>% 
+  select(resolved, victim_age, victim_race, victim_sex)
+```
 
+Fit a logistic regression for the binary "resolved" outcome and victim demographics as predictors. Uses glm function with the family specified to account for non-Gaussian outcome distribution.
+```{r}
+fit_logistic = 
+  baltimore_df %>% 
+  glm(resolved ~ victim_age + victim_race + victim_sex, data = ., family = binomial()) 
+```
+
+Using logistic regression to get ORs:
+```{r}
+fit_logistic %>% 
+  broom::tidy() %>% 
+  mutate(OR = exp(estimate)) %>%
+  select(term, log_OR = estimate, OR, p.value) %>% 
+  knitr::kable(digits = 3)
+```
+
+Compute fitted values to estimate the model summary
+```{r}
+baltimore_df %>% 
+  modelr::add_predictions(fit_logistic) %>%
+  mutate(fitted_prob = boot::inv.logit(pred))
 ```
 
 In Baltimore, race disparities exist. Can map across all the cities in the datasets across all cities.
+
+
+
+
+
+## Lecture: Cross-Validation
+```{r}
+library (tidyverse)
+library(modelr)
+library(mgcv)
+
+set.seed(1)
+```
+
+
+### Doing cross-validation by hand:
+```{r}
+nonlin_df = 
+  tibble(
+    id = 1:100,
+    x = runif(100, 0, 1),
+    y = 1 - 10 * (x - .3) ^ 2 + rnorm(100, 0, .3)
+  )
+
+nonlin_df %>% 
+  ggplot(aes(x = x, y = y)) + 
+  geom_point() + theme_bw()
+```
+
+
+training vs. testing datasets: see how well the red dots predict the black dots2
+```{r}
+train_df = sample_n(nonlin_df, 80)
+test_df = anti_join(nonlin_df, train_df, by = "id")
+
+ggplot(train_df, aes(x = x, y = y)) + 
+  geom_point() + 
+  geom_point(data = test_df, color = "red")
+```
+
+
+Fit 3 models of varying goodness
+```{r}
+linear_mod = lm(y ~ x, data = train_df)
+smooth_mod = mgcv::gam(y ~ s(x), data = train_df)
+wiggly_mod = mgcv::gam(y ~ s(x, k = 30), sp = 10e-6, data = train_df)
+```
+
+Using the 3 models and testing that with the add_prediction area. How can I compare these different models that would confirm these?
+```{r}
+train_df %>% 
+  add_predictions(wiggly_mod) %>% 
+  ggplot(aes(x = x, y = y)) +
+  geom_point() +
+  geom_point(aes(y = pred), color = "red")
+```
+
+Faceting these 3 models
+```{r}
+train_df %>% 
+  gather_predictions(linear_mod, smooth_mod, wiggly_mod) %>% 
+  mutate(model = fct_inorder(model)) %>% 
+  ggplot(aes(x = x, y = y)) + 
+  geom_point() + 
+  geom_line(aes(y = pred), color = "red") + 
+  facet_wrap(~model)
+```
+
+
+Cross Validation: ALways pick the model that will do better on the testing dataset
+```{r}
+rmse(linear_mod, test_df)
+rmse(smooth_mod, test_df)
+rmse(wiggly_mod, test_df)
+```
+
+
+
+
+### Cross Validation in model r
+80-20 is the default for crossv_mc
+```{r}
+cv_df = 
+  crossv_mc(nonlin_df, 100) 
+```
+
+
+```{r}
+cv_df =
+  cv_df %>% 
+  mutate(
+    train = map(train, as_tibble),
+    test = map(test, as_tibble))
+```
+
+Iterate this for the following models
+map1 = just gives you one
+map2 = gives you first column and second column (models, datasets)
+```{r}
+cv_results = 
+  cv_df %>% 
+  mutate(linear_mod  = map(train, ~lm(y ~ x, data = .x)),
+         smooth_mod  = map(train, ~mgcv::gam(y ~ s(x), data = .x)),
+         wiggly_mod  = map(train, ~mgcv::gam(y ~ s(x, k = 30), sp = 10e-6, data = .x))) %>% 
+  mutate(rmse_linear = map2_dbl(linear_mod, test, ~rmse(model = .x, data = .y)),
+         rmse_smooth = map2_dbl(smooth_mod, test, ~rmse(model = .x, data = .y)),
+         rmse_wiggly = map2_dbl(wiggly_mod, test, ~rmse(model = .x, data = .y)))
+```
+
+Data Manipulation
+- RMSE is above. Going to pick the smooth model bc it has the lowest RMSE
+```{r}
+cv_results %>% 
+  select(starts_with("rmse")) %>% 
+  pivot_longer(
+    everything(),
+    names_to = "model", 
+    values_to = "rmse",
+    names_prefix = "rmse_") %>% 
+  mutate(model = fct_inorder(model)) %>% 
+  ggplot(aes(x = model, y = rmse)) + geom_violin()
+```
+
+### Example with Child Growth
+```{r}
+child_growth = read_csv("./data/nepalese_children.csv")
+```
+
+We think that non-linearity might be happening here.
+```{r}
+child_growth %>% 
+  ggplot(aes(x = weight, y = armc)) + 
+  geom_point(alpha = .5)
+```
+
+Add code to do change point term
+```{r}
+child_growth =
+  child_growth %>% 
+  mutate(weight_cp = (weight > 7) * (weight - 7))
+
+linear_mod    = lm(armc ~ weight, data = child_growth)
+pwl_mod    = lm(armc ~ weight + weight_cp, data = child_growth)
+smooth_mod = gam(armc ~ s(weight), data = child_growth)
+```
+
